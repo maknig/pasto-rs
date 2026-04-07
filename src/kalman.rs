@@ -1,6 +1,3 @@
-use crate::channels::{CONTROL_CH, ControlEvent};
-use embassy_time::{Duration, Timer};
-
 pub struct Kalman1D {
     x: f32,
     p: f32,

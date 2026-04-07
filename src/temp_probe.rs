@@ -1,7 +1,6 @@
-use crate::channels::{CONTROL_CH, ControlEvent};
 use crate::kalman::Kalman1D;
 use embassy_stm32::Peri;
-use embassy_stm32::adc::{Adc, AdcChannel, AnyAdcChannel, Resolution, SampleTime};
+use embassy_stm32::adc::{Adc, AnyAdcChannel};
 use embassy_stm32::peripherals::ADC1;
 
 pub struct TempProbe {

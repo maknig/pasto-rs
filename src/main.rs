@@ -6,18 +6,16 @@
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
 use embassy_stm32::exti::ExtiInput;
-use embassy_stm32::gpio::{Input, Level, Output, Pull, Speed};
+use embassy_stm32::gpio::{Level, Output, Pull, Speed};
 
 use embassy_stm32::Config;
-use embassy_stm32::peripherals;
-use embassy_stm32::wdg::IndependentWatchdog;
 
 use crate::channels::{CONTROL_CH, ControlEvent, HEATER_CMD_CH, HeaterCommand, ZC_CH};
 use crate::heater::Heater;
-use crate::pid::Pid;
+use crate::switch::Switch;
 use crate::temp_probe::TempProbe;
-use defmt::{debug, error, info, write};
-use embassy_stm32::adc::{Adc, AdcChannel, Resolution, SampleTime};
+use defmt::info;
+use embassy_stm32::adc::AdcChannel;
 use embassy_time::{Duration, Timer};
 use {defmt_rtt as _, panic_probe as _};
 
@@ -26,6 +24,7 @@ mod control;
 mod heater;
 mod kalman;
 mod pid;
+mod switch;
 mod temp_probe;
 mod watchdog;
 
@@ -72,22 +71,12 @@ pub async fn heater_task(mut heater: Heater) {
             Either::Second(HeaterCommand::Power(p)) => {
                 heater.set_power(p);
             }
+            Either::Second(HeaterCommand::SetEnabled(e)) => {
+                heater.set_enabled(e);
+            }
         }
     }
 }
-#[embassy_executor::task]
-pub async fn control_task() {
-    let mut pid = Pid::new(0.05, 0.01, 0.0);
-    let setpoint = 93.0;
-
-    loop {
-        let ControlEvent::TempUpdate(t) = CONTROL_CH.receive().await;
-        let power = pid.update(setpoint, t, 0.05);
-
-        HEATER_CMD_CH.send(HeaterCommand::Power(power)).await;
-    }
-}
-
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let mut config = Config::default();
@@ -103,6 +92,10 @@ async fn main(spawner: Spawner) {
 
     let zc_input = ExtiInput::new(p.PA0, p.EXTI0, Pull::Down);
 
+    let switch_input = ExtiInput::new(p.PA3, p.EXTI3, Pull::None);
+    let switch_led = Output::new(p.PA4, Level::Low, Speed::Low);
+    let switch = Switch::new(switch_input, switch_led);
+
     // -------- Watchdog --------
     // let wdg = IndependentWatchdog::new(p.IWDG, 2_000_000); // ~2s timeout
     //
@@ -113,9 +106,11 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(zc_task(zc_input)).unwrap();
 
-    spawner.spawn(control_task()).unwrap();
+    spawner.spawn(control::control_task()).unwrap();
 
     spawner.spawn(temp_task(temp_probe)).unwrap();
+
+    spawner.spawn(switch::switch_task(switch)).unwrap();
 
     // spawner.spawn(watchdog_task(wdg)).unwrap();
 }
