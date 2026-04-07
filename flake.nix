@@ -21,7 +21,6 @@
           pkgs.probe-rs-tools
           rust
           pkgs.llvmPackages.bintools
-          pkgs.opencode
           pkgs.qemu # optional: for emulation/testing
         ];
 
