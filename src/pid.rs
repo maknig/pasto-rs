@@ -20,17 +20,29 @@ impl Pid {
             out_max: 1.0,
         }
     }
+    pub fn integral(&self) -> f32 {
+        self.integral
+    }
 
     pub fn update(&mut self, setpoint: f32, measured: f32, dt: f32) -> f32 {
         let error = setpoint - measured;
 
-        self.integral += error * dt;
+        let p_value = self.kp * error;
 
-        let derivative = (error - self.prev_error) / dt;
+        if dt <= 0.0 {
+            return p_value.clamp(self.out_min, self.out_max);
+        }
+
+        let d_value = self.kd * (error - self.prev_error) / dt;
+
+        self.integral += error * dt;
+        self.integral = self.integral.clamp(-0.1, 0.1);
+
+        let i_value = self.ki * self.integral;
 
         self.prev_error = error;
 
-        let mut out = self.kp * error + self.ki * self.integral + self.kd * derivative;
+        let mut out = p_value + i_value + d_value;
 
         out = out.clamp(self.out_min, self.out_max);
 

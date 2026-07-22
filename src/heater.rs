@@ -1,4 +1,37 @@
+use crate::config::{SETPOINT, TEMP_MAX, TEMP_MIN};
+use defmt::info;
 use embassy_stm32::gpio::Output;
+
+#[derive(Clone, Copy, defmt::Format)]
+pub enum HeaterState {
+    /// Heater disabled by user
+    Disabled,
+    /// Actively heating toward setpoint
+    Heating,
+    /// At setpoint (within ±2 °C), heater idle
+    AtSetpoint,
+    /// Temperature above setpoint + 2 °C (overshoot)
+    AboveSetpoint,
+    /// Temperature reading out of safe range
+    Fault,
+}
+
+pub fn determine_heater_state(enabled: bool, temp: f32, _power: f32) -> HeaterState {
+    if !enabled {
+        return HeaterState::Disabled;
+    }
+    if temp < TEMP_MIN || temp > TEMP_MAX {
+        return HeaterState::Fault;
+    }
+    let error = SETPOINT - temp;
+    if error.abs() < 2.0 {
+        HeaterState::AtSetpoint
+    } else if error < 0.0 {
+        HeaterState::AboveSetpoint
+    } else {
+        HeaterState::Heating
+    }
+}
 
 pub struct Heater {
     gate: Output<'static>,
@@ -24,11 +57,15 @@ impl Heater {
     }
 
     pub fn set_enabled(&mut self, enabled: bool) {
+        info!("set enebled {}", enabled);
         self.enabled = enabled;
         if !enabled {
             self.power = 0.0;
             self.set_low();
         }
+    }
+    pub fn enabled(&self) -> bool {
+        self.enabled
     }
 
     pub fn next_halfwave(&mut self) -> bool {

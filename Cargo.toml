@@ -6,6 +6,7 @@ name = "pasto-rs"
 version = "0.1.0"
 
 [dependencies]
+nalgebra = { version = "0.33", default-features = false }
 bytemuck = "1.23.2"
 cortex-m = { version = "0.7.7", features = [
     "inline-asm",
@@ -64,3 +65,25 @@ debug = [
     "embassy-time/defmt-timestamp-uptime",
     "embassy-stm32/defmt",
 ]
+# Enable the system-identification logger task.
+# Replaces the normal PID control loop with a fixed step-excitation sequence
+# and emits CSV data over RTT for thermoblock model fitting.
+# Usage: cargo run --features sysid
+# Then on host: python sim/sysid_fit.py sysid_raw.log
+sysid = ["debug"]
+# Enable the hardware sanity-check task.
+# Replaces the normal PID control loop with a sequential test of all
+# machine components: LEDs, temp sensor, zero-crossing, buttons, heater,
+# pump, and valve.
+# Usage: cargo run --features check
+check = ["debug"]
+# Enable the valve open/close test task.
+# Replaces the normal control loop with a 5s-open / 5s-closed cycle
+# while logging temperature over RTT.
+# Usage: cargo run --features valve_test
+valve_test = ["debug"]
+# Enable UART telemetry streaming over USART1 (PA9 TX, 115200 baud).
+# Runs alongside normal control — not mutually exclusive with other features.
+# Usage: cargo run --features monitor
+# Host:  python sim/monitor_rerun.py /dev/ttyUSB0
+monitor = []
