@@ -36,7 +36,7 @@ const T_AMB: f64 = 24.0; // calibrate to your machine's actual ambient at boot
 pub async fn control_task() {
     // SIMC PI tuning matching THIS model (lambda=12s): Kc=50.2756447862,
     // Ti=66.6790624681 -> Kp=Kc, Ki=Kc/Ti.
-    let pid = Pid::new(0.08, 0.008, 0.0); // Kp, Ki, Kd
+    let pid = Pid::new(70., 15., 0.0); // Kp, Ki, Kd
 
     // Discretized at Ts=CONTROL_TS_S=0.5s from the ACTUAL fitted gray-box
     // parameters (C_h=249.9899 J/K, C_s=572.4037 J/K, R_hs=0.0547 K/W,
@@ -103,16 +103,18 @@ pub async fn control_task() {
                         // diverges from what's actually applied to the
                         // real plant every time the pump is on.
                         let ff = if PUMP_ON.load(Ordering::Relaxed) {
-                            0.53
+                            530.
                         } else {
                             0.0
                         };
 
                         let (u_out, y_hat) =
                             smith.step_with_feedforward(setpoint_dev, measured_dev, ff);
-
-                        HEATER_CMD_CH.send(HeaterCommand::Power(u_out as f32)).await;
-                        (u_out as f32, y_hat as f32)
+                        let u_normalized = u_out / 1000.;
+                        HEATER_CMD_CH
+                            .send(HeaterCommand::Power(u_normalized as f32))
+                            .await;
+                        (u_normalized as f32, y_hat as f32)
                     } else {
                         (0.0, 0.0)
                     };
@@ -130,7 +132,7 @@ pub async fn control_task() {
                     temp: last_temp,
                     setpoint: SETPOINT,
                     power: last_power,
-                    y_hat: y_hat,
+                    y_hat,
                     flags,
                 });
             }

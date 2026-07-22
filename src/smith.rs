@@ -65,17 +65,19 @@ pub struct PiController {
     ts: f64,
     u_min: f64,
     u_max: f64,
+    error_limit: f64,
     integral: f64,
 }
 
 impl PiController {
-    pub const fn new(kc: f64, ti: f64, ts: f64, u_min: f64, u_max: f64) -> Self {
+    pub const fn new(kc: f64, ti: f64, ts: f64, u_min: f64, u_max: f64, error_limit: f64) -> Self {
         Self {
             kc,
             ti,
             ts,
             u_min,
             u_max,
+            error_limit,
             integral: 0.0,
         }
     }
@@ -84,7 +86,15 @@ impl PiController {
 impl PidController for PiController {
     fn compute(&mut self, setpoint: f64, process_variable: f64) -> f64 {
         let error = setpoint - process_variable;
-        let u_unsat = self.kc * (error + self.integral / self.ti);
+        // Clamp the error only for the proportional part to prevent spikes during large transients.
+        // The integral part still uses the true error to ensure correct long-term tracking.
+        let p_error = if error.abs() > self.error_limit {
+            error.signum() * self.error_limit
+        } else {
+            error
+        };
+
+        let u_unsat = self.kc * (p_error + self.integral / self.ti);
         let u = if u_unsat > self.u_max {
             self.u_max
         } else if u_unsat < self.u_min {

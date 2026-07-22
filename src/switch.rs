@@ -56,6 +56,6 @@ pub async fn pump_switch_task(mut switch: Switch) {
         VALVE_OPEN.store(on, Ordering::Relaxed);
         PUMP_CMD_CH.send(PumpCommand::SetEnabled(on)).await;
         VALVE_CMD_CH.send(ValveCommand::SetOpen(on)).await;
-        CONTROL_CH.send(crate::channels::ControlEvent::TimeoutReset).await;
+        //CONTROL_CH.send(crate::channels::ControlEvent::TimeoutReset).await;
     }
 }

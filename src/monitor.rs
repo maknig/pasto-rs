@@ -27,7 +27,7 @@ use embassy_stm32::mode::Async;
 use embassy_stm32::usart::UartTx;
 
 const SYNC: u8 = 0xAA;
-const FRAME_LEN: usize = 19;
+const FRAME_LEN: usize = 23;
 
 #[embassy_executor::task]
 pub async fn monitor_task(mut tx: UartTx<'static, Async>) {
@@ -42,14 +42,15 @@ pub async fn monitor_task(mut tx: UartTx<'static, Async>) {
         buf[5..9].copy_from_slice(&frame.temp.to_le_bytes());
         buf[9..13].copy_from_slice(&frame.setpoint.to_le_bytes());
         buf[13..17].copy_from_slice(&frame.power.to_le_bytes());
-        buf[17] = frame.flags;
+        buf[17..21].copy_from_slice(&frame.y_hat.to_le_bytes());
+        buf[21] = frame.flags;
 
         // XOR checksum over payload bytes (1..18)
         let mut chk: u8 = 0;
-        for &b in &buf[1..18] {
+        for &b in &buf[1..22] {
             chk ^= b;
         }
-        buf[18] = chk;
+        buf[22] = chk;
 
         // Ignore write errors — best-effort telemetry
         let _ = tx.write(&buf).await;

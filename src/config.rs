@@ -1,5 +1,5 @@
 /// Target brew temperature in °C
-pub const SETPOINT: f32 = 93.0;
+pub const SETPOINT: f32 = 94.0;
 
 // ---------------------------------------------------------------------------
 // Pump
