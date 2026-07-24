@@ -36,9 +36,18 @@ impl DiscreteStateSpaceModel {
 
     /// Update internal state x[k+1] using control input u[k] and return y[k]
     pub fn update(&mut self, u: f64) -> f64 {
+        self.update_with_disturbance(u, [0.0, 0.0])
+    }
+
+    /// Like `update`, but adds a known additive state disturbance `d[k]` to
+    /// x[k+1] -- a modeled load acting directly on a node (not through the
+    /// input `u`/`b`), e.g. a heat sink at the sensor node discretized into
+    /// its own [dx0, dx1] vector by the caller. Keeps the internal model in
+    /// step with a real, quantifiable disturbance so y_hat doesn't diverge.
+    pub fn update_with_disturbance(&mut self, u: f64, d: [f64; 2]) -> f64 {
         let y = self.output(u);
-        let x0_next = self.a[0][0] * self.x[0] + self.a[0][1] * self.x[1] + self.b[0] * u;
-        let x1_next = self.a[1][0] * self.x[0] + self.a[1][1] * self.x[1] + self.b[1] * u;
+        let x0_next = self.a[0][0] * self.x[0] + self.a[0][1] * self.x[1] + self.b[0] * u + d[0];
+        let x1_next = self.a[1][0] * self.x[0] + self.a[1][1] * self.x[1] + self.b[1] * u + d[1];
         self.x = [x0_next, x1_next];
         y
     }
@@ -46,74 +55,32 @@ impl DiscreteStateSpaceModel {
     pub fn reset(&mut self) {
         self.x = [0.0, 0.0];
     }
+
+    /// Roll a copy of the state forward `horizon` steps with zero input and
+    /// return the peak y reached -- a "what if I stopped applying power
+    /// right now" projection. Used to decide when to cut off an open-loop
+    /// preheat: once the free-response peak would already reach setpoint,
+    /// further heating only adds overshoot. Does not mutate `self`.
+    pub fn peak_free_response(&self, horizon: usize) -> f64 {
+        let mut x = self.x;
+        let mut peak = self.c[0] * x[0] + self.c[1] * x[1];
+        for _ in 0..horizon {
+            let x0_next = self.a[0][0] * x[0] + self.a[0][1] * x[1];
+            let x1_next = self.a[1][0] * x[0] + self.a[1][1] * x[1];
+            x = [x0_next, x1_next];
+            let y = self.c[0] * x[0] + self.c[1] * x[1];
+            if y > peak {
+                peak = y;
+            }
+        }
+        peak
+    }
 }
 
 /// Interface trait for the inner PID controller
 pub trait PidController {
     fn compute(&mut self, setpoint: f64, process_variable: f64) -> f64;
     fn reset(&mut self);
-}
-
-/// Generic PI controller (Td=0) with clamped output and conditional
-/// anti-windup, implementing PidController. Gains/limits are supplied by
-/// the caller at construction -- nothing model-specific lives in this
-/// struct itself.
-#[derive(Debug, Clone, Copy)]
-pub struct PiController {
-    kc: f64,
-    ti: f64,
-    ts: f64,
-    u_min: f64,
-    u_max: f64,
-    error_limit: f64,
-    integral: f64,
-}
-
-impl PiController {
-    pub const fn new(kc: f64, ti: f64, ts: f64, u_min: f64, u_max: f64, error_limit: f64) -> Self {
-        Self {
-            kc,
-            ti,
-            ts,
-            u_min,
-            u_max,
-            error_limit,
-            integral: 0.0,
-        }
-    }
-}
-
-impl PidController for PiController {
-    fn compute(&mut self, setpoint: f64, process_variable: f64) -> f64 {
-        let error = setpoint - process_variable;
-        // Clamp the error only for the proportional part to prevent spikes during large transients.
-        // The integral part still uses the true error to ensure correct long-term tracking.
-        let p_error = if error.abs() > self.error_limit {
-            error.signum() * self.error_limit
-        } else {
-            error
-        };
-
-        let u_unsat = self.kc * (p_error + self.integral / self.ti);
-        let u = if u_unsat > self.u_max {
-            self.u_max
-        } else if u_unsat < self.u_min {
-            self.u_min
-        } else {
-            u_unsat
-        };
-
-        let would_relieve = (u_unsat - u).signum() != error.signum();
-        if u == u_unsat || would_relieve {
-            self.integral += error * self.ts;
-        }
-
-        u
-    }
-
-    fn reset(&mut self) {
-        self.integral = 0.0;
-    }
 }
 
 /// Fixed-size zero-allocation ring buffer for dead time delay.
@@ -155,6 +122,17 @@ impl<const N: usize> RingBuffer<N> {
 
     pub fn reset(&mut self) {
         self.data = [0.0; N];
+        self.head = 0;
+    }
+
+    /// Overwrite every in-use slot (0..capacity) with the same value and
+    /// reset the head -- used to re-seed the delay line from a real
+    /// measurement instead of zeroing it (see
+    /// `DiscreteSmithPredictor::reseed`).
+    pub fn fill(&mut self, val: f64) {
+        for i in 0..self.capacity {
+            self.data[i] = val;
+        }
         self.head = 0;
     }
 }
@@ -199,7 +177,7 @@ impl<C: PidController, const N: usize> DiscreteSmithPredictor<C, N> {
     /// was identified in (e.g. degC deviation from T_AMB, not raw degC --
     /// do that conversion in control.rs, not here).
     pub fn step(&mut self, setpoint: f64, y_measured: f64) -> (f64, f64) {
-        self.step_with_feedforward(setpoint, y_measured, 0.0)
+        self.step_with_feedforward(setpoint, y_measured, 0.0, [0.0, 0.0])
     }
 
     /// Same as `step`, but adds `u_ff` (e.g. a known disturbance-rejection
@@ -212,11 +190,17 @@ impl<C: PidController, const N: usize> DiscreteSmithPredictor<C, N> {
     /// Note: u_total is NOT re-clamped to the controller's own u_min/u_max
     /// after adding u_ff -- if you need a hard actuator ceiling inclusive
     /// of feedforward, clamp the returned value in control.rs.
+    ///
+    /// `state_dist` is a known additive state disturbance (see
+    /// `update_with_disturbance`) applied to the internal model as it
+    /// advances -- e.g. the pump's water heat-draw at the sensor node. Pass
+    /// [0.0, 0.0] when there is none.
     pub fn step_with_feedforward(
         &mut self,
         setpoint: f64,
         y_measured: f64,
         u_ff: f64,
+        state_dist: [f64; 2],
     ) -> (f64, f64) {
         let y_m = self.buffer.read_oldest();
         let d_hat = y_measured - y_m;
@@ -224,9 +208,36 @@ impl<C: PidController, const N: usize> DiscreteSmithPredictor<C, N> {
         let y_feedback = y_hat + d_hat;
         let u_pid = self.controller.compute(setpoint, y_feedback);
         let u_total = u_pid + u_ff;
-        let y_hat_next = self.model.update(u_total);
+        let y_hat_next = self.model.update_with_disturbance(u_total, state_dist);
         self.buffer.push(y_hat_next);
         (u_total, y_hat)
+    }
+
+    /// Advance the internal model/delay buffer with a known applied input,
+    /// without invoking the inner controller -- for open-loop phases (e.g.
+    /// preheat/coast) where the PID output is bypassed but the model and
+    /// disturbance estimate must stay warm against real sensor data, so
+    /// there's no discontinuity when closed-loop control resumes. Returns
+    /// the current disturbance estimate d_hat = y_measured - y_m[k - d].
+    pub fn advance_open_loop(&mut self, y_measured: f64, u_applied: f64, state_dist: [f64; 2]) -> f64 {
+        let y_m = self.buffer.read_oldest();
+        let d_hat = y_measured - y_m;
+        let y_hat_next = self.model.update_with_disturbance(u_applied, state_dist);
+        self.buffer.push(y_hat_next);
+        d_hat
+    }
+
+    /// Re-seed model state and delay buffer from a real measurement instead
+    /// of zeroing them. Use this instead of `reset()` whenever the plant is
+    /// not actually at the model's zero/ambient reference (e.g.
+    /// re-enabling while still hot) -- otherwise the delay buffer reads a
+    /// bogus 0.0 against a real hot measurement for the next `delay_steps`
+    /// ticks, producing a large spurious d_hat spike right when precision
+    /// matters most.
+    pub fn reseed(&mut self, y_measured: f64) {
+        self.controller.reset();
+        self.model.x = [y_measured, y_measured];
+        self.buffer.fill(y_measured);
     }
 
     pub fn reset(&mut self) {

@@ -12,6 +12,10 @@ pub enum HeaterState {
     AtSetpoint,
     /// Temperature above setpoint + 2 °C (overshoot)
     AboveSetpoint,
+    /// Actively warming open-loop before closed-loop trim engages -- covers
+    /// both the preheat (full power) and coast (power off, waiting for the
+    /// thermal lag to carry temp near setpoint) sub-phases
+    Preheating,
     /// Temperature reading out of safe range
     Fault,
 }

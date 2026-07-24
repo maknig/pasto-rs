@@ -71,7 +71,10 @@ pub async fn sysid_task() {
         // Drain switch events so switch_task never blocks
         while SWITCH_CH.try_receive().is_ok() {}
 
-        let ControlEvent::TempUpdate(temp) = CONTROL_CH.receive().await;
+        let temp = match CONTROL_CH.receive().await {
+            ControlEvent::TempUpdate(temp) => temp,
+            ControlEvent::TimeoutReset => continue,
+        };
 
         let time_ms = start.elapsed().as_millis();
 
@@ -112,6 +115,7 @@ pub async fn sysid_task() {
                 temp,
                 setpoint: 0.0,
                 power: current_power,
+                y_hat: 0.0,
                 flags,
             });
         }

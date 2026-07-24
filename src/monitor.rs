@@ -4,7 +4,7 @@
 //! channel and streams binary frames over USART1 (PA9 TX) for host-side
 //! visualization with Rerun.
 //!
-//! # Frame format (19 bytes)
+//! # Frame format (23 bytes)
 //!
 //! | Offset | Size | Field        | Encoding         |
 //! |--------|------|------------- |------------------|
@@ -13,8 +13,9 @@
 //! | 5      | 4    | temp         | f32 LE           |
 //! | 9      | 4    | setpoint     | f32 LE           |
 //! | 13     | 4    | power        | f32 LE           |
-//! | 17     | 1    | flags        | bit0=en bit1=vlv bit2=pump |
-//! | 18     | 1    | checksum     | XOR of bytes 1..17 |
+//! | 17     | 4    | y_hat        | f32 LE           |
+//! | 21     | 1    | flags        | bit0=en bit1=vlv bit2=pump |
+//! | 22     | 1    | checksum     | XOR of bytes 1..22 |
 //!
 //! # Host usage
 //!
@@ -45,7 +46,7 @@ pub async fn monitor_task(mut tx: UartTx<'static, Async>) {
         buf[17..21].copy_from_slice(&frame.y_hat.to_le_bytes());
         buf[21] = frame.flags;
 
-        // XOR checksum over payload bytes (1..18)
+        // XOR checksum over payload bytes (1..22)
         let mut chk: u8 = 0;
         for &b in &buf[1..22] {
             chk ^= b;

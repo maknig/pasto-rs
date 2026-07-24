@@ -15,6 +15,16 @@
       rust = pkgs.rust-bin.stable.latest.default.override {
         targets = [ "thumbv7em-none-eabi" ];
       };
+      # Python + host tooling for system identification / telemetry (sim/, sysid/)
+      python = pkgs.python3.withPackages (ps: with ps; [
+        numpy
+        scipy
+        matplotlib
+        pyserial      # sysid/monitor_rerun.py serial capture
+        rerun-sdk
+        # rerun-sdk is optional (live view only); install via pip or use --no-viz
+      ]);
+      
     in {
       devShells.${system}.default = pkgs.mkShell {
         buildInputs = [
@@ -22,6 +32,8 @@
           rust
           pkgs.llvmPackages.bintools
           pkgs.qemu # optional: for emulation/testing
+          pkgs.rerun
+          python
         ];
 
         shellHook = ''

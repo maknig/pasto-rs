@@ -16,6 +16,52 @@ pub const TEMP_MIN: f32 = 0.0;
 pub const TEMP_MAX: f32 = 130.0;
 
 // ---------------------------------------------------------------------------
+// Preheat / coast (model-predictive open-loop warmup, see control.rs)
+// ---------------------------------------------------------------------------
+
+/// Below this setpoint deviation on enable, skip preheat/coast entirely and
+/// go straight to closed-loop control -- small errors don't need it.
+pub const PREHEAT_MIN_ERROR_C: f32 = 10.0;
+
+/// Fixed open-loop power (0..1 fraction) applied during the preheat phase.
+/// 1.0 = full power, matching what the PID already does today under
+/// saturation at a large cold-start error -- this just makes it explicit
+/// and boundable by the model-predictive cutoff instead of open-ended PID
+/// saturation. Same 0..1 scale as HeaterCommand::Power and the identified
+/// model's input (see control.rs).
+pub const PREHEAT_POWER: f32 = 1.0;
+
+/// Safety-cap fallback (seconds): force the Preheat -> Coast transition
+/// even if the model-predictive cutoff never predicts crossing setpoint.
+pub const PREHEAT_MAX_S: u32 = 180;
+
+/// Hand off from Coast to closed-loop control once measured temp is within
+/// this many °C of setpoint.
+pub const COAST_EXIT_MARGIN_C: f32 = 3.0;
+
+/// Safety-cap fallback (seconds): force the Coast -> Closed transition even
+/// if temp never gets within COAST_EXIT_MARGIN_C of setpoint.
+pub const COAST_MAX_S: u32 = 120;
+
+// ---------------------------------------------------------------------------
+// Brew feedforward shaping (pump on -- see control.rs)
+// ---------------------------------------------------------------------------
+
+/// Steady brew feedforward (0..1 fraction) once the start-of-brew boost has
+/// decayed -- rejects the water's continuous heat draw.
+pub const FF_BREW_STEADY: f32 = 0.3;
+
+/// Feedforward at the instant brewing starts. Front-loads the core so it heats
+/// fast and the block-temp dip is minimized, instead of waiting out the
+/// core->block thermal lag. Relaxes to FF_BREW_STEADY.
+pub const FF_BREW_MAX: f32 = 1.0;
+
+/// Per-control-tick relaxation of the brew feedforward from FF_BREW_MAX toward
+/// FF_BREW_STEADY (first-order): ff += (steady - ff) * FF_BREW_DECAY.
+/// ~0.06 gives an ~8 s boost time constant at CONTROL_TS_S = 0.5 s.
+pub const FF_BREW_DECAY: f32 = 0.06;
+
+// ---------------------------------------------------------------------------
 // System Identification (sysid feature)
 // ---------------------------------------------------------------------------
 
@@ -35,28 +81,10 @@ pub const SYSID_PHASE0_S: u32 = 60;
 pub const SYSID_PHASE1_S: u32 = 90;
 
 /// Phase 2 duration (seconds): heater off — capture cooling response.
+/// Must run ≈ 3× the slow time constant (τ_slow ≈ 13 min) so the cooldown tail
+/// flattens toward ambient — that decay rate is what pins the slow pole and
+/// hence the DC gain / block→ambient loss. A short cooldown leaves the gain
+/// unidentifiable (the heat-up alone looks like an integrator).
 #[cfg(feature = "sysid")]
-pub const SYSID_PHASE2_S: u32 = 60;
+pub const SYSID_PHASE2_S: u32 = 2400;
 
-// ---------------------------------------------------------------------------
-// Thermoblock model:  T[k+1] = MODEL_A * T[k] + MODEL_B * u[k] + MODEL_C
-// Discrete-time, Ts = 0.1 s.
-//
-// Derived from first-order continuous-time model:
-//   dT/dt = -(T - T_amb) / tau  +  K * u / tau
-//
-// Parameters:
-//   MODEL_A = exp(-Ts / tau)
-//   MODEL_B = K * (1 - MODEL_A)
-//   MODEL_C = T_amb * (1 - MODEL_A)
-//
-// Typical espresso thermoblock (starting point before sysid):
-//   tau   ≈ 30 s    → MODEL_A ≈ 0.9967
-//   K     ≈ 180 °C  (max temp above ambient at full power)
-//   T_amb ≈ 20 °C   → MODEL_C ≈ 0.067
-//
-// Fill in after running: python sim/sysid_fit.py sysid_raw.log
-// ---------------------------------------------------------------------------
-pub const MODEL_A: f32 = 0.9967; // placeholder — replace after sysid
-pub const MODEL_B: f32 = 0.5940; // placeholder — replace after sysid
-pub const MODEL_C: f32 = 0.0660; // placeholder — replace after sysid

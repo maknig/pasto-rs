@@ -33,7 +33,6 @@ mod kalman;
 #[cfg(feature = "monitor")]
 mod monitor;
 mod pid;
-mod mpc;
 mod pump;
 mod switch;
 #[cfg(feature = "sysid")]
@@ -78,6 +77,7 @@ pub async fn temp_task(mut probe: TempProbe) {
 /// | Heating        | solid on            |
 /// | AtSetpoint     | solid on            |
 /// | AboveSetpoint  | solid on            |
+/// | Preheating     | solid on            |
 /// | Fault          | toggle every 250 ms | (2 Hz blink)
 #[embassy_executor::task]
 async fn led1_task(mut led: Output<'static>) {
@@ -94,7 +94,10 @@ async fn led1_task(mut led: Output<'static>) {
                 led.set_low();
                 state = HEATER_STATE_CH.receive().await;
             }
-            HeaterState::Heating | HeaterState::AtSetpoint | HeaterState::AboveSetpoint => {
+            HeaterState::Heating
+            | HeaterState::AtSetpoint
+            | HeaterState::AboveSetpoint
+            | HeaterState::Preheating => {
                 led.set_high();
                 state = HEATER_STATE_CH.receive().await;
             }
@@ -122,6 +125,7 @@ async fn led1_task(mut led: Output<'static>) {
 /// | Heating        | solid on            | (below setpoint)
 /// | AtSetpoint     | off                 |
 /// | AboveSetpoint  | toggle every 250 ms | (2 Hz blink)
+/// | Preheating     | toggle every 100 ms | (5 Hz blink)
 /// | Fault          | off                 |
 #[embassy_executor::task]
 async fn led2_task(mut led: Output<'static>) {
@@ -147,6 +151,18 @@ async fn led2_task(mut led: Output<'static>) {
                 match select(
                     LED2_STATE_CH.receive(),
                     Timer::after(Duration::from_millis(250)),
+                )
+                .await
+                {
+                    Either::First(s) => state = s,
+                    Either::Second(_) => {}
+                }
+            }
+            HeaterState::Preheating => {
+                led.toggle();
+                match select(
+                    LED2_STATE_CH.receive(),
+                    Timer::after(Duration::from_millis(100)),
                 )
                 .await
                 {

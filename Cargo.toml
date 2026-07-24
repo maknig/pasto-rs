@@ -6,7 +6,6 @@ name = "pasto-rs"
 version = "0.1.0"
 
 [dependencies]
-nalgebra = { version = "0.33", default-features = false }
 bytemuck = "1.23.2"
 cortex-m = { version = "0.7.7", features = [
     "inline-asm",
