@@ -140,11 +140,14 @@ def load_csv(path: str, target_dt: float | None = None):
 # --------------------------------------------------------------------------- #
 # Model simulation (I/O only -- realization-invariant, used for the fit)
 # --------------------------------------------------------------------------- #
-def simulate(theta, u, dt, fit_delay, tau_slow_fixed=None):
+def simulate(theta, u, dt, fit_delay, tau_slow_fixed=None, fixed_L=None):
     """Simulate y = G(s)*u for G = g/((tau_fast s+1)(tau_slow s+1)) * exp(-L s).
 
     theta = [log g, log tau_fast, (log tau_slow if tau_slow_fixed is None),
-             (log L if fit_delay)]
+             (log L if fit_delay and fixed_L is None)]
+
+    fixed_L (seconds), when given, holds the pure dead time at that value instead
+    of fitting it -- L is then absent from theta.
     """
     g = np.exp(theta[0])
     tau_fast = np.exp(theta[1])
@@ -154,7 +157,12 @@ def simulate(theta, u, dt, fit_delay, tau_slow_fixed=None):
     else:
         tau_slow = np.exp(theta[2])
         idx_L = 3
-    L = np.exp(theta[idx_L]) if fit_delay else 0.0
+    if fixed_L is not None:
+        L = fixed_L
+    elif fit_delay:
+        L = np.exp(theta[idx_L])
+    else:
+        L = 0.0
 
     a1 = 1.0 / tau_fast + 1.0 / tau_slow
     a0 = 1.0 / (tau_fast * tau_slow)
@@ -172,7 +180,7 @@ def shift_input(u, L, dt):
     return np.concatenate([np.full(d, u[0]), u[:-d]])
 
 
-def fit(t, y, u, dt, fit_delay, tau_slow_fixed=None):
+def fit(t, y, u, dt, fit_delay, tau_slow_fixed=None, fixed_L=None):
     # Initial guess from crude data features.
     g0 = max((y.max() - y.min()) / max(u.max(), 1e-3), 1e-3)
     span = t[-1] - t[0]
@@ -184,13 +192,14 @@ def fit(t, y, u, dt, fit_delay, tau_slow_fixed=None):
         theta0 = [np.log(g0), np.log(span / 6.0), np.log(span / 30.0)]
         lb = [np.log(1e-4), np.log(dt), np.log(dt)]
         ub = [np.log(1e4), np.log(span * 5), np.log(span * 5)]
-    if fit_delay:
+    # A free dead-time parameter only when we are fitting L (not holding it fixed).
+    if fit_delay and fixed_L is None:
         theta0.append(np.log(max(dt, 1.0)))
         lb.append(np.log(dt / 10))
         ub.append(np.log(span / 3))
 
     res = least_squares(
-        lambda th: simulate(th, u, dt, fit_delay, tau_slow_fixed) - y,
+        lambda th: simulate(th, u, dt, fit_delay, tau_slow_fixed, fixed_L) - y,
         theta0, bounds=(lb, ub), method="trf", x_scale="jac",
     )
     return res
@@ -293,6 +302,20 @@ def main():
                     help="control-loop sample time for discretization (default 0.5)")
     ap.add_argument("--no-dead-time", action="store_true",
                     help="fix pure dead time L=0 instead of fitting it")
+    ap.add_argument("--dead-time", type=float, default=None, metavar="SECONDS",
+                    help="hold pure dead time fixed at this value instead of "
+                         "fitting it (the auto fit tends to collapse L toward "
+                         "0; the physical transport delay is ~13.8 s). Mutually "
+                         "exclusive with --no-dead-time.")
+    ap.add_argument("--start", type=float, default=None, metavar="SECONDS",
+                    help="drop all samples before this time (e.g. --start 120 "
+                         "to use only data after 2 min -- skips switch glitches "
+                         "and lead-in). The pre-heat baseline is then taken from "
+                         "whatever power-off segment remains before the step.")
+    ap.add_argument("--end", type=float, default=None, metavar="SECONDS",
+                    help="drop all samples after this time. Combine with --start "
+                         "to isolate a single step out of a multi-step log for a "
+                         "regime-specific fit.")
     ap.add_argument("--resample-dt", type=float, default=1.0, metavar="SECONDS",
                     help="resample the log onto this uniform step size before "
                          "fitting (default 1.0; pass 0 to keep native rate)")
@@ -305,8 +328,28 @@ def main():
                     help="save a fit-vs-data plot to this path")
     args = ap.parse_args()
 
+    if args.no_dead_time and args.dead_time is not None:
+        sys.exit("--no-dead-time and --dead-time are mutually exclusive")
+
     resample_dt = args.resample_dt if args.resample_dt > 0 else None
     t, y, u, dt = load_csv(args.csv, target_dt=resample_dt)
+
+    # Optional start/end crop: drop samples outside [start, end] (switch
+    # glitches, lead-in, or other steps) before anything else, so the
+    # baseline/step detection below sees a clean single-step record.
+    if args.start is not None or args.end is not None:
+        lo = args.start if args.start is not None else -np.inf
+        hi = args.end if args.end is not None else np.inf
+        keep = (t >= lo) & (t <= hi)
+        if keep.sum() < 2:
+            sys.exit(f"--start/--end window leaves <2 samples "
+                     f"(record spans {t[0]:.1f}..{t[-1]:.1f}s)")
+        if keep.sum() < len(t):
+            t, y, u = t[keep], y[keep], u[keep]
+            print(f"[info] cropped to t=[{t[0]:.1f}, {t[-1]:.1f}]s "
+                  f"({len(t)} samples)")
+
+    fixed_L = args.dead_time
     fit_delay = not args.no_dead_time
 
     # The model represents temperature as a deviation from ambient with zero
@@ -348,7 +391,7 @@ def main():
                 t, y, u = t[keep], y[keep], u[keep]
                 print(f"[info] truncated to t<={t[-1]:.0f}s ({len(t)} pts) for fitting")
 
-    res = fit(t, y, u, dt, fit_delay)
+    res = fit(t, y, u, dt, fit_delay, fixed_L=fixed_L)
     g = float(np.exp(res.x[0]))
     # theta[1]/theta[2] aren't constrained to any particular order -- sort
     # so tau_slow/tau_fast are labeled correctly regardless of which one the
@@ -356,9 +399,14 @@ def main():
     # affect the fit itself, only the reported labels).
     tau_a, tau_b = float(np.exp(res.x[1])), float(np.exp(res.x[2]))
     tau_slow, tau_fast = max(tau_a, tau_b), min(tau_a, tau_b)
-    L = float(np.exp(res.x[3])) if fit_delay else 0.0
+    if fixed_L is not None:
+        L = float(fixed_L)
+    elif fit_delay:
+        L = float(np.exp(res.x[3]))
+    else:
+        L = 0.0
 
-    y_hat = simulate(res.x, u, dt, fit_delay)
+    y_hat = simulate(res.x, u, dt, fit_delay, fixed_L=fixed_L)
     resid = y_hat - y
     rms = float(np.sqrt(np.mean(resid**2)))
     denom = float(np.sqrt(np.mean((y - y.mean())**2)))

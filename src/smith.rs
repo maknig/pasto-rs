@@ -58,9 +58,10 @@ impl DiscreteStateSpaceModel {
 
     /// Roll a copy of the state forward `horizon` steps with zero input and
     /// return the peak y reached -- a "what if I stopped applying power
-    /// right now" projection. Used to decide when to cut off an open-loop
-    /// preheat: once the free-response peak would already reach setpoint,
-    /// further heating only adds overshoot. Does not mutate `self`.
+    /// right now" projection. Currently unused: the preheat cutoff moved to a
+    /// model-independent measured-lead test (PREHEAT_LEAD_C), which is robust to
+    /// model error. Kept as the hook for a future model-predictive cutoff.
+    #[allow(dead_code)]
     pub fn peak_free_response(&self, horizon: usize) -> f64 {
         let mut x = self.x;
         let mut peak = self.c[0] * x[0] + self.c[1] * x[1];
@@ -146,6 +147,9 @@ impl<const N: usize> RingBuffer<N> {
 pub struct DiscreteSmithPredictor<C: PidController, const N: usize> {
     pub controller: C,
     pub model: DiscreteStateSpaceModel,
+    // Runtime dead-time steps; the buffer is sized from it at construction.
+    // No longer read after the preheat cutoff dropped its horizon rollout.
+    #[allow(dead_code)]
     pub delay_steps: usize,
     buffer: RingBuffer<N>,
 }
@@ -195,6 +199,14 @@ impl<C: PidController, const N: usize> DiscreteSmithPredictor<C, N> {
     /// `update_with_disturbance`) applied to the internal model as it
     /// advances -- e.g. the pump's water heat-draw at the sensor node. Pass
     /// [0.0, 0.0] when there is none.
+    ///
+    /// Returns `(u_total, y_feedback)`. The second element is the
+    /// dead-time-compensated estimate `model.output + d_hat`, NOT the raw
+    /// open-loop model output -- it tracks the real temperature at steady
+    /// state for any model DC gain (the gain cancels via d_hat) and leads
+    /// temp by the dead time during transients, so it is the meaningful thing
+    /// to display. Reporting it here keeps the model gain from ever needing to
+    /// be distorted just to make the plot sit on setpoint.
     pub fn step_with_feedforward(
         &mut self,
         setpoint: f64,
@@ -210,7 +222,7 @@ impl<C: PidController, const N: usize> DiscreteSmithPredictor<C, N> {
         let u_total = u_pid + u_ff;
         let y_hat_next = self.model.update_with_disturbance(u_total, state_dist);
         self.buffer.push(y_hat_next);
-        (u_total, y_hat)
+        (u_total, y_feedback)
     }
 
     /// Advance the internal model/delay buffer with a known applied input,
@@ -219,7 +231,12 @@ impl<C: PidController, const N: usize> DiscreteSmithPredictor<C, N> {
     /// disturbance estimate must stay warm against real sensor data, so
     /// there's no discontinuity when closed-loop control resumes. Returns
     /// the current disturbance estimate d_hat = y_measured - y_m[k - d].
-    pub fn advance_open_loop(&mut self, y_measured: f64, u_applied: f64, state_dist: [f64; 2]) -> f64 {
+    pub fn advance_open_loop(
+        &mut self,
+        y_measured: f64,
+        u_applied: f64,
+        state_dist: [f64; 2],
+    ) -> f64 {
         let y_m = self.buffer.read_oldest();
         let d_hat = y_measured - y_m;
         let y_hat_next = self.model.update_with_disturbance(u_applied, state_dist);

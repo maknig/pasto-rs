@@ -5,12 +5,12 @@ use defmt::{debug, info, warn};
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
 use embassy_stm32::Config;
+use embassy_stm32::adc::AdcChannel;
 use embassy_stm32::exti::ExtiInput;
 use embassy_stm32::gpio::{Level, Output, Pull, Speed};
-use embassy_stm32::adc::AdcChannel;
+use embassy_stm32::wdg::IndependentWatchdog;
 use embassy_time::{Duration, Timer};
 use {defmt_rtt as _, panic_probe as _};
-
 
 use crate::channels::{
     CONTROL_CH, ControlEvent, HEATER_CMD_CH, HEATER_STATE_CH, HeaterCommand, HeaterState,
@@ -23,7 +23,6 @@ use crate::temp_probe::TempProbe;
 use crate::valve::Valve;
 
 mod channels;
-mod smith;
 #[cfg(feature = "check")]
 mod check;
 mod config;
@@ -34,6 +33,7 @@ mod kalman;
 mod monitor;
 mod pid;
 mod pump;
+mod smith;
 mod switch;
 #[cfg(feature = "sysid")]
 mod sysid;
@@ -42,7 +42,6 @@ mod valve;
 #[cfg(feature = "valve_test")]
 mod valve_test;
 mod watchdog;
-
 
 #[cfg(all(feature = "sysid", feature = "check"))]
 compile_error!("Features `sysid` and `check` are mutually exclusive");
@@ -162,7 +161,7 @@ async fn led2_task(mut led: Output<'static>) {
                 led.toggle();
                 match select(
                     LED2_STATE_CH.receive(),
-                    Timer::after(Duration::from_millis(100)),
+                    Timer::after(Duration::from_millis(500)),
                 )
                 .await
                 {
@@ -234,6 +233,10 @@ async fn main(spawner: Spawner) {
     // Temperature probe (ADC1 / PA6)
     let temp_probe = TempProbe::new(p.ADC1, p.PA6.degrade_adc());
 
+    // Independent hardware watchdog (2 s) -- resets the MCU (heater gate -> off)
+    // if the executor ever hangs. Pet by watchdog_task every 500 ms.
+    let wdg = IndependentWatchdog::new(p.IWDG, 2_000_000);
+
     // USART1 TX (PA9) for telemetry monitor
     #[cfg(feature = "monitor")]
     let monitor_tx = {
@@ -278,4 +281,5 @@ async fn main(spawner: Spawner) {
         .unwrap();
     spawner.spawn(led1_task(led1)).unwrap();
     spawner.spawn(led2_task(led2)).unwrap();
+    spawner.spawn(watchdog::watchdog_task(wdg)).unwrap();
 }

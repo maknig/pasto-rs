@@ -1,5 +1,5 @@
 /// Target brew temperature in °C
-pub const SETPOINT: f32 = 94.0;
+pub const SETPOINT: f32 = 92.0;
 
 // ---------------------------------------------------------------------------
 // Pump
@@ -15,13 +15,18 @@ pub const TEMP_MIN: f32 = 0.0;
 /// Fault threshold — above this temperature something is wrong
 pub const TEMP_MAX: f32 = 130.0;
 
+/// Idle auto-off: disable the heater this long after the last activity (heater
+/// enable or pump use), exactly like a manual switch-off. Pump use resets the
+/// timer; re-enabling is heater-switch only. 720 s = 12 min.
+pub const HEATER_TIMEOUT_S: u32 = 720;
+
 // ---------------------------------------------------------------------------
 // Preheat / coast (model-predictive open-loop warmup, see control.rs)
 // ---------------------------------------------------------------------------
 
 /// Below this setpoint deviation on enable, skip preheat/coast entirely and
 /// go straight to closed-loop control -- small errors don't need it.
-pub const PREHEAT_MIN_ERROR_C: f32 = 10.0;
+pub const PREHEAT_MIN_ERROR_C: f32 = 12.0;
 
 /// Fixed open-loop power (0..1 fraction) applied during the preheat phase.
 /// 1.0 = full power, matching what the PID already does today under
@@ -32,8 +37,16 @@ pub const PREHEAT_MIN_ERROR_C: f32 = 10.0;
 pub const PREHEAT_POWER: f32 = 1.0;
 
 /// Safety-cap fallback (seconds): force the Preheat -> Coast transition
-/// even if the model-predictive cutoff never predicts crossing setpoint.
+/// even if the measured-lead cutoff never fires.
 pub const PREHEAT_MAX_S: u32 = 180;
+
+/// Preheat cuts heater power when measured temp reaches SETPOINT - this margin,
+/// then coasts the residual thermal lag up the rest of the way. Model-
+/// INDEPENDENT (replaces the old peak_free_response prediction, which fired late
+/// because of the ~14 s sensor dead time). Larger = cut earlier / lower peak;
+/// smaller = cut later / higher peak. Tune against the real warmup peak: raise
+/// if it overshoots 94, lower if it falls short.
+pub const PREHEAT_LEAD_C: f32 = 14.0;
 
 /// Hand off from Coast to closed-loop control once measured temp is within
 /// this many °C of setpoint.
@@ -48,8 +61,10 @@ pub const COAST_MAX_S: u32 = 120;
 // ---------------------------------------------------------------------------
 
 /// Steady brew feedforward (0..1 fraction) once the start-of-brew boost has
-/// decayed -- rejects the water's continuous heat draw.
-pub const FF_BREW_STEADY: f32 = 0.3;
+/// decayed -- rejects the water's continuous heat draw. Set near the physical
+/// draw (~0.465 = 90 ml/min * 4.186 J/gK * 74 K = 465 W of 1000 W); lower under-
+/// compensates and lets temp dip, higher risks a bump.
+pub const FF_BREW_STEADY: f32 = 0.45;
 
 /// Feedforward at the instant brewing starts. Front-loads the core so it heats
 /// fast and the block-temp dip is minimized, instead of waiting out the
@@ -59,32 +74,16 @@ pub const FF_BREW_MAX: f32 = 1.0;
 /// Per-control-tick relaxation of the brew feedforward from FF_BREW_MAX toward
 /// FF_BREW_STEADY (first-order): ff += (steady - ff) * FF_BREW_DECAY.
 /// ~0.06 gives an ~8 s boost time constant at CONTROL_TS_S = 0.5 s.
-pub const FF_BREW_DECAY: f32 = 0.06;
+pub const FF_BREW_DECAY: f32 = 0.03;
 
 // ---------------------------------------------------------------------------
 // System Identification (sysid feature)
 // ---------------------------------------------------------------------------
 
-/// Heater power fraction applied during the step-up phase [0.0, 1.0].
-/// 0.5 is recommended: safe for bench testing while still giving clear dynamics.
-/// Use 1.0 only on a fully plumbed machine with proper thermal limits in place.
+/// Heater power fraction [0.0, 1.0] applied while the heater switch is ON during
+/// a switch-driven sysid run (see sysid.rs). 1.0 = full power for the richest
+/// dynamics. There is NO automatic over-temp cutoff in sysid mode (the fault
+/// trip lives in control_task, which sysid replaces), so run only on a fully
+/// plumbed machine, attended, with the switch in reach.
 #[cfg(feature = "sysid")]
-pub const SYSID_POWER: f32 = 0.5;
-
-/// Phase 0 duration (seconds): heater off, wait for thermal equilibrium.
-#[cfg(feature = "sysid")]
-pub const SYSID_PHASE0_S: u32 = 60;
-
-/// Phase 1 duration (seconds): heater at SYSID_POWER — capture heating response.
-/// Should cover ≥ 3× the expected thermal time constant (τ ≈ 30–120 s for thermoblock).
-#[cfg(feature = "sysid")]
-pub const SYSID_PHASE1_S: u32 = 90;
-
-/// Phase 2 duration (seconds): heater off — capture cooling response.
-/// Must run ≈ 3× the slow time constant (τ_slow ≈ 13 min) so the cooldown tail
-/// flattens toward ambient — that decay rate is what pins the slow pole and
-/// hence the DC gain / block→ambient loss. A short cooldown leaves the gain
-/// unidentifiable (the heat-up alone looks like an integrator).
-#[cfg(feature = "sysid")]
-pub const SYSID_PHASE2_S: u32 = 2400;
-
+pub const SYSID_POWER: f32 = 1.0;

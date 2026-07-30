@@ -7,6 +7,8 @@ pub struct TempProbe {
     adc: Adc<'static, ADC1>,
     channel: AnyAdcChannel<ADC1>,
     kalman: Kalman1D,
+    alpha: f32,
+    temp: f32,
 }
 
 impl TempProbe {
@@ -15,6 +17,8 @@ impl TempProbe {
             adc: Adc::new(adc),
             channel,
             kalman: Kalman1D::new(0.02, 0.5, 25.0),
+            alpha: 0.8,
+            temp: 20.0,
         }
     }
 
@@ -22,9 +26,9 @@ impl TempProbe {
         let raw = self.adc.blocking_read(&mut self.channel);
         let factor = 150.0 / 4096.0;
         let offset = -0.3;
-        let temp = raw as f32 * factor + offset;
-
-        self.kalman.update(temp)
+        let new_temp = raw as f32 * factor + offset;
+        self.temp = self.alpha * self.temp + (1.0 - self.alpha) * new_temp;
+        self.kalman.update(self.temp)
     }
 }
 

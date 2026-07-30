@@ -38,10 +38,16 @@ impl Pid {
 
         let d_value = self.kd * (error - self.prev_error) / dt;
 
-        self.integral += error * dt;
-        self.integral = self.integral.clamp(-1., 1.);
+        // Integrate in OUTPUT units and clamp to the actuator range (anti-windup)
+        // so the integral alone can supply the steady hold duty (~0.037 at 94 C)
+        // and zero the error. The old form clamped the raw error-integral to
+        // +/-1, which with ki=0.005 capped the integral's authority at +/-0.005
+        // duty -- far below the hold duty, leaving a ~1 C proportional offset at
+        // setpoint.
+        self.integral += self.ki * error * dt;
+        self.integral = self.integral.clamp(self.out_min, self.out_max);
 
-        let i_value = self.ki * self.integral;
+        let i_value = self.integral;
 
         self.prev_error = error;
 
